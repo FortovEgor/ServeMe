@@ -86,15 +86,19 @@ namespace Utils {
 
     namespace Interfaces {
         class HttpServerInterface {
+        public:
             virtual void addEndpoint(const std::string &path, const std::string &response, Method method) = 0;
         };
         class LoggerInterface {
+        public:
             virtual void log(Level level, const std::string &message) noexcept = 0;
         };
         class HttpSessionInterface {
+        public:
             virtual void start() = 0;
         };
         class RESTAPIAPPInterface {
+        public:
             virtual void AddEndpoint(const std::string &path, const std::string &response, const std::string &method) = 0;
             virtual void RunServer() noexcept = 0;
             virtual void StopServer() noexcept = 0;
@@ -186,6 +190,8 @@ namespace Utils {
     }// namespace Templates::Responses
 
     namespace {
+        typedef std::unordered_map<std::string, std::pair<std::string, Method>> endpoints;
+
         std::string readFileIntoString(const std::string &filename, Logger::Ptr logger) {
             std::ifstream file(filename);
             if (!file.is_open()) {
@@ -214,10 +220,9 @@ namespace Utils {
     }// namespace
 
     class HttpSession : public std::enable_shared_from_this<HttpSession>, Interfaces::HttpSessionInterface {
-        typedef std::unordered_map<std::string, std::pair<std::string, Method>> endpoint;
     public:
         HttpSession(boost::asio::ip::tcp::socket socket,
-                    const endpoint &endpoints,
+                    const endpoints &endpoints,
                     Logger::Ptr logger,
                     CACHE& cache,
                     bool enable_cache = true)
@@ -302,7 +307,7 @@ namespace Utils {
 
         boost::asio::ip::tcp::socket socket_;
         boost::asio::streambuf request_;
-        const endpoint &endpoints_;
+        const endpoints &endpoints_;
         const bool enable_cache;
         Logger::Ptr logger;
         CACHE& cache;
@@ -362,7 +367,7 @@ namespace Utils {
 
         boost::asio::ip::tcp::acceptor acceptor_;
         boost::asio::ip::tcp::socket socket_;
-        std::unordered_map<std::string, std::pair<std::string, Method>> endpoints_;
+        endpoints endpoints_;
         const bool enable_cache;
         Logger::Ptr logger;
         CACHE& cache;
