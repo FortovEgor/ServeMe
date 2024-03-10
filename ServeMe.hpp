@@ -33,7 +33,7 @@ namespace Utils {
 //#define DEBUG  // uncomment this line to see all Logs (this macros enables debug logs)
     namespace {
         std::mutex mu;
-        std::string filePrefix = "@file:";
+        const std::string filePrefix = "@file:";
         typedef std::unordered_map<std::string, std::string> CACHE;
 
         enum class Level {
