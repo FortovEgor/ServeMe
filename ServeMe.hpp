@@ -28,9 +28,10 @@
 #include <sstream>
 #include <syslog.h>
 #include <vector>
+#include <tuple>
 
 namespace Utils {
-//#define DEBUG  // uncomment this line to see all Logs (this macros enables debug logs)
+#define DEBUG  // uncomment this line to see all Logs (this macros enables debug logs)
     namespace {
         std::mutex mu;
         const std::string filePrefix = "@file:";
@@ -46,8 +47,22 @@ namespace Utils {
 
         enum class Method {
             GET = 0,
-            POST
+            POST,
+            HEAD,
+            PUT,
+            DELETE,
+            PATCH
         };
+
+        Method getMethodFromString(const std::string& method) {
+            if (method == "GET") return Method::GET;
+            if (method == "POST") return Method::POST;
+            if (method == "HEAD") return Method::HEAD;
+            if (method == "PUT") return Method::PUT;
+            if (method == "DELETE") return Method::DELETE;
+            if (method == "PATH") return Method::DELETE;
+            else return Method::GET;
+        }
 
         int getPriority(Level level) noexcept {
             switch (level) {
@@ -87,7 +102,7 @@ namespace Utils {
     namespace Interfaces {
         class HttpServerInterface {
         public:
-            virtual void addEndpoint(const std::string &path, const std::string &response, Method method) = 0;
+            virtual void addEndpoint(const std::string &path, const std::string &response, Method method, const uint responseCodeOK=200, const uint responseCodeNotOK=404) = 0;
         };
         class LoggerInterface {
         public:
@@ -99,7 +114,7 @@ namespace Utils {
         };
         class RESTAPIAPPInterface {
         public:
-            virtual void AddEndpoint(const std::string &path, const std::string &response, const std::string &method) = 0;
+            virtual void AddEndpoint(const std::string &path, const std::string &response, const std::string &method, const uint responseCodeOK, const uint responseCodeNotOK) = 0;
             virtual void RunServer() noexcept = 0;
             virtual void StopServer() noexcept = 0;
         };
@@ -181,16 +196,17 @@ namespace Utils {
     };
 
     namespace Templates::Responses {
-        const auto OK = [](const std::string &body = "Hello, World!", const std::string &content_type = "text/html") {
+        const auto OK = [](const std::string &body = "Hello, World!", const uint responseCodeOK=200, const std::string &content_type = "text/html") {
             return "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(body.length()) + "\r\nContent-Type: " + content_type + "\r\n\r\n" + body;
         };
-        const auto NOT_OK = [](const std::string &body = "404 Not Found!") {
-            return "HTTP/1.1 404 Not Found\r\nContent-Length: 14\r\n\r\n" + body;
+        const auto NOT_OK = [](const uint responseCodeNotOK=404, const std::string &body = "Not Found!") {
+            const uint contentLength = (std::to_string(responseCodeNotOK) + " " + std::to_string(responseCodeNotOK)).size();
+            return "HTTP/1.1 " + std::to_string(responseCodeNotOK) + " " + body + "\r\nContent-Length: " + std::to_string(contentLength) + "\r\n\r\n" + body;
         };
     }// namespace Templates::Responses
 
     namespace {
-        typedef std::unordered_map<std::string, std::pair<std::string, Method>> endpoints;
+        typedef std::unordered_map<std::string, std::tuple<std::string, Method, uint, uint>> endpoints;  // ... uint responseCodeOK=200, uint responseCodeNotOK=404
 
         std::string readFileIntoString(const std::string &filename, Logger::Ptr logger) {
             std::ifstream file(filename);
@@ -204,6 +220,7 @@ namespace Utils {
             }
 
             std::string content((std::istreambuf_iterator<char>(file)), (std::istreambuf_iterator<char>()));
+            std::cout << "Content: " << content;
             return content;
         }
 
@@ -246,6 +263,7 @@ namespace Utils {
 
     private:
         void do_read() {
+            // middlewars НЕ ПРЕДУСМОТРЕНЫ
             auto self = shared_from_this();
             boost::asio::async_read_until(
                     socket_, request_, "\r\n\r\n",
@@ -260,20 +278,21 @@ namespace Utils {
                             iss >> method >> path >> version;
 
                             auto it = endpoints_.find(path);
-                            if (it != endpoints_.end() && (method == "GET" ? Method::GET : Method::POST) == it->second.second) {
+                            if (it != endpoints_.end() && getMethodFromString(method) == std::get<1>(it->second)) {
 #ifdef DEBUG
                                 logger->log(Level::Debug, "Endpoint " + path + " of type " + method + " found");
 #endif
-                                if (enable_cache && cache.find(method) != cache.end()) {
-                                    do_write(cache[method]);
+                                if (enable_cache && cache.find(path) != cache.end()) {
+                                    do_write(cache[path]);
                                     logger->log(Level::Info, "Endpoint " + path + " of type " + method + " responsing...");
                                 } else {
-                                    std::string body = std::move(getBody(it->second.first, logger));
-                                    std::string response = Templates::Responses::OK(body);
+                                    const std::string body = std::move(getBody(std::get<0>(it->second), logger));
+                                    const uint responseCode = std::get<2>(it->second);
+                                    std::string response = Templates::Responses::OK(body, responseCode);
                                     do_write(response);
                                     logger->log(Level::Info, "Endpoint " + path + " of type " + method + " responsing...");
                                     if (enable_cache) {
-                                        cache.insert(std::make_pair(method, response));
+                                        cache.insert(std::make_pair(path, response));
 #ifdef DEBUG
                                         logger->log(Level::Debug, "Endpoint " + path + " of type " + method + " added to the cache");
 #endif
@@ -290,6 +309,7 @@ namespace Utils {
         }
 
         void do_write(const std::string &response) {
+            // middlewars НЕ ПРЕДУСМОТРЕНЫ
             auto self = shared_from_this();
             boost::asio::async_write(socket_, boost::asio::buffer(response),
                                      [this, self](const boost::system::error_code &ec, std::size_t length) {
@@ -318,9 +338,10 @@ namespace Utils {
         HttpServer(boost::asio::io_context &io_context,
                    Logger::Ptr logger,
                    CACHE& cache,
-                   short port = 8080,
-                   bool enable_cache = true)
-                try : acceptor_(io_context, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)),
+                   const short port = 8080,
+                   const bool enable_cache = true,
+                   const bool isV4 = true)
+                try : acceptor_(io_context, boost::asio::ip::tcp::endpoint(isV4 ? boost::asio::ip::tcp::v4() : boost::asio::ip::tcp::v6(), port)),
                       socket_(io_context),
                       enable_cache(enable_cache),
                       logger(logger),
@@ -343,8 +364,8 @@ namespace Utils {
         /// @param path - the endpoint path from the root page, e.g. "/"(root page), "/hello", "data"
         /// @param response - the full response page in string format (so generate the text beforehand)
         /// @param method - the method of the request; now "GET" & "POST" supported
-        void addEndpoint(const std::string &path, const std::string &response, Method method) override {
-            endpoints_[path] = std::make_pair(response, method);
+        void addEndpoint(const std::string &path, const std::string &response, Method method, const uint responseCodeOK=200, const uint responseCodeNotOK=404) override {
+            endpoints_[path] = {response, method, responseCodeOK, responseCodeNotOK};  // std::make_pair(response, method);
         }
 
         typedef std::shared_ptr<HttpServer> Ptr;
@@ -392,7 +413,7 @@ namespace Utils {
 #endif
         }
 
-        void AddEndpoint(const std::string &path, const std::string &response, const std::string &method="GET") override {
+        void AddEndpoint(const std::string &path, const std::string &response, const std::string &method="GET", const uint responseCodeOK=200, const uint responseCodeNotOK=404) override {
 #ifdef DEBUG
             logger->log(Level::Debug, "Enpoint " + path + " with method " + method + " added");
 #endif
